@@ -70,12 +70,12 @@ class ViewController: NSViewController {
         loadCurrentClockSource()
         loadCurrentDefaultOutput()
         loadCurrentDefaultInput()
-        loadCurrentSampleRate()
         LoadEnableVolumeControls()
         updateActiveOutputChannelsCountLabel()
         updateActiveInputChannelsCountLabel()// Здесь обновляем метку
         self.sampleRateComboBox.target = self
-        self.sampleRateComboBox.action = #selector(sampleRateChanged(_:))
+        self.sampleRateComboBox.action = #selector(comboBoxSelected(_:))
+        setInitialFrequencyInComboBox()
     }
     
 // Обработка OutputChannels -----------------------------------------------------
@@ -530,112 +530,70 @@ class ViewController: NSViewController {
             FrequencyOption(name: "96000", value: 96_000)
         ]
 
-        // Загружаем текущую частоту из .plist файла
-        private func loadCurrentSampleRate() {
-            if let dict = NSDictionary(contentsOf: URL(fileURLWithPath: filePath)) as? [String: Any],
-               let currentValue = dict["SampleRate"] as? Int {
-                selectSampleRate(indexForValue: currentValue)
-            }
-        }
-
-        // Устанавливаем правильный пункт в комбобокс
-        private func selectSampleRate(indexForValue: Int) {
-            switch indexForValue {
-            case 44100: sampleRateComboBox.selectItem(at: 0)
-            case 48000: sampleRateComboBox.selectItem(at: 1)
-            case 88200: sampleRateComboBox.selectItem(at: 2)
-            case 96000: sampleRateComboBox.selectItem(at: 3)
-            default: break
-            }
-        }
-
-        // Реакция на смену выбранной частоты
-        @objc func sampleRateChanged(_ sender: NSComboBox) {
-            let index = sender.indexOfSelectedItem
+    @objc func comboBoxSelected(_ sender: Any?) {
+            let index = sampleRateComboBox.indexOfSelectedItem
             guard index >= 0 && index < frequencies.count else { return }
-
-            let selectedFrequency = frequencies[index]
-            updateSampleRate(newValue: selectedFrequency.value)
+            
+            let selectedFrequency = frequencies[index].value
+            changeSampleRate(selectedFrequency)
+            
+            // Сохраняем новое значение SampleRate в plist-файл
+            saveToPlist(sampleRate: selectedFrequency)
         }
-
-        // Изменяет частоту в системе и обновляет .plist файл
-        private func updateSampleRate(newValue: Float64) {
-            // Записываем новую частоту в .plist файл
-            saveNewSampleRateToPlist(value: Int(newValue))
-
-            // Меняем частоту непосредственно в аудиосистеме
-            changeSystemSampleRate(newValue)
-        }
-
-        // Записываем новое значение частоты в .plist файл
-        private func saveNewSampleRateToPlist(value: Int) {
-            if let mutableDict = NSMutableDictionary(contentsOf: URL(fileURLWithPath: filePath)) {
-                mutableDict.setValue(value, forKey: "SampleRate")
-                mutableDict.write(toFile: filePath, atomically: true)
-            } else {
-                print("Ошибка при сохранении нового значения в plist.")
-            }
-        }
-
-        // Функция для установки новой частоты через Core Audio
-        private func changeSystemSampleRate(_ newSampleRate: Float64) {
-            guard let targetDeviceID = findDeviceByName("PCI-424") else {
-                print("Устройство с указанным названием не найдено.")
-                return
-            }
-
+        
+        private func changeSampleRate(_ newSampleRate: Float64) {
+            // Ищем нужное устройство по его уникальному имени
+            guard let targetDeviceID = findDeviceByName("PCI-424") else { return }
+            
+            // Создаем изменяемую копию адреса свойства
             var propertyAddress = AudioObjectPropertyAddress(
                 mSelector: kAudioDevicePropertyNominalSampleRate,
                 mScope: kAudioDevicePropertyScopeOutput,
                 mElement: kAudioObjectPropertyElementMaster
             )
-
+            
+            // Передача новой частоты по ссылке должна происходить через изменяемую копию
             var mutableNewSampleRate = newSampleRate
-            let result = AudioObjectSetPropertyData(targetDeviceID, &propertyAddress, 0, nil, UInt32(MemoryLayout<Float64>.size), &mutableNewSampleRate)
-
-            if result != noErr {
-                print("Ошибка при установке частоты: $result)")
-            } else {
-                print("Успешно установили частоту: $newSampleRate) Гц")
-            }
+            
+            // Установка новой частоты выборки
+            _ = AudioObjectSetPropertyData(targetDeviceID, &propertyAddress, 0, nil, UInt32(MemoryLayout<Float64>.size), &mutableNewSampleRate)
         }
-
-        // Поиск устройства по его названию
+        
+        /// Поиск устройства по его уникальному имени
         private func findDeviceByName(_ deviceName: String) -> AudioDeviceID? {
             var deviceCount = AudioObjectPropertyAddress(
                 mSelector: kAudioHardwarePropertyDevices,
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMaster
             )
-
+            
             var sizeOfArray: UInt32 = 0
             AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &deviceCount, 0, nil, &sizeOfArray)
-
+            
             if let dataPtr = malloc(Int(sizeOfArray)) {
                 defer { free(dataPtr) }
-
+                
                 let result = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &deviceCount, 0, nil, &sizeOfArray, dataPtr)
                 if result != noErr {
-                    print("Ошибка чтения устройств")
                     return nil
                 }
-
+                
                 let numDevices = Int(sizeOfArray) / MemoryLayout<AudioDeviceID>.stride
                 for i in 0..<numDevices {
                     let deviceID = dataPtr.load(fromByteOffset: i * MemoryLayout<AudioDeviceID>.stride, as: AudioDeviceID.self)
-
-                    // Получаем имя устройства
+                    
+                    // Читаем имя текущего устройства
                     let deviceNameString = getDeviceName(deviceID)
                     if deviceNameString.contains(deviceName) {
                         return deviceID
                     }
                 }
             }
-
+            
             return nil
         }
-
-        // Получаем имя устройства по его ID
+        
+        /// Возвращает имя устройства по его ID
         private func getDeviceName(_ deviceID: AudioDeviceID) -> String {
             var deviceName: CFString?
             var propAddr = AudioObjectPropertyAddress(
@@ -643,19 +601,102 @@ class ViewController: NSViewController {
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMaster
             )
-
+            
             var size: UInt32 = 0
             AudioObjectGetPropertyDataSize(deviceID, &propAddr, 0, nil, &size)
-
+            
             if size > 0 {
                 let buffer = UnsafeMutablePointer<CFString>.allocate(capacity: 1)
                 defer { buffer.deallocate() }
-
-                AudioObjectGetPropertyData(deviceID, &propAddr, 0, nil, &size, buffer)
+                
+                _ = AudioObjectGetPropertyData(deviceID, &propAddr, 0, nil, &size, buffer)
                 deviceName = buffer.pointee
             }
-
+            
             return deviceName.map(String.init(describing:)) ?? ""
+        }
+        
+        /// Установить начальную частоту в комбобокс
+        private func setInitialFrequencyInComboBox() {
+            // Получаем текущую частоту устройства
+            guard let currentFrequency = readCurrentSystemFrequency(forDeviceNamed: "PCI-424") else { return }
+            
+            // Ищем подходящую частоту из доступных опций
+            let matchingIndex = frequencies.firstIndex { option in
+                abs(option.value - currentFrequency) < 1 // Допустимая погрешность 1 Гц
+            }
+            
+            // Если найдена соответствующая частота, выбираем её в комбобоксе
+            if let validIndex = matchingIndex {
+                sampleRateComboBox.selectItem(at: Int(UInt32(validIndex)))
+            }
+        }
+        
+        /// Читает текущую частоту указанного устройства
+        private func readCurrentSystemFrequency(forDeviceNamed deviceName: String) -> Float64? {
+            // Получаем список всех устройств
+            var devicesListForSearch = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                                 mElement: kAudioObjectPropertyElementMaster)
+            
+            var sizeForSearch: UInt32 = 0
+            AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &devicesListForSearch, 0, nil, &sizeForSearch)
+            
+            // Рассчитываем количество устройств
+            let count = Int(sizeForSearch) / MemoryLayout<AudioDeviceID>.size
+            let listBuffer = UnsafeMutablePointer<AudioDeviceID>.allocate(capacity: count)
+            defer { listBuffer.deallocate() }
+            
+            // Получаем сами устройства
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &devicesListForSearch, 0, nil, &sizeForSearch, listBuffer)
+            
+            // Ищем устройство с указанным именем
+            for i in 0 ..< count {
+                let deviceID = listBuffer[i]
+                
+                // Получаем имя устройства
+                let deviceNameString = getDeviceName(deviceID)
+                
+                // Если нашли устройство с нашим именем
+                if deviceNameString.contains(deviceName) {
+                    // Получаем частоту устройства
+                    var propertyAddress = AudioObjectPropertyAddress(
+                        mSelector: kAudioDevicePropertyNominalSampleRate,
+                        mScope: kAudioDevicePropertyScopeOutput,
+                        mElement: kAudioObjectPropertyElementMaster
+                    )
+                    
+                    var sizeFreq: UInt32 = UInt32(MemoryLayout<Float64>.size)
+                    var frequencyValue: Float64 = 0
+                    
+                    let result = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &sizeFreq, &frequencyValue)
+                    
+                    if result == noErr {
+                        return frequencyValue
+                    } else {
+                        break
+                    }
+                }
+            }
+            
+            return nil
+        }
+        
+        // Функция сохраняет новую частоту в .plist файл
+        private func saveToPlist(sampleRate: Float64) {
+            do {
+                // Чтение существующего содержимого plist файла
+                let existingDict = NSDictionary(contentsOfFile: filePath) as? [String : Any] ?? [:]
+                
+                // Обновляем словарь новым значением 'SampleRate'
+                var updatedDict = existingDict
+                updatedDict["SampleRate"] = NSNumber(value: sampleRate)
+                
+                // Записываем обновленные данные обратно в файл
+                try PropertyListSerialization.data(fromPropertyList: updatedDict, format: .xml, options: 0).write(to: URL(fileURLWithPath: filePath))
+            } catch {
+                print("Ошибка записи в plist:", error.localizedDescription)
+            }
         }
     
 // Обработка Stream Controls Enable Key ------------------------------------------------------------------------------------------
