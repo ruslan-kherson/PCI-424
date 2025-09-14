@@ -8,6 +8,39 @@
 import Cocoa
 
 class RadioController: NSViewController {
+    
+    func findDynamicFilePath() -> String? {
+         let currentUser = NSUserName()
+         print("Текущий пользователь: \(currentUser)")
+         
+         let homeDir = "/Users/\(currentUser)"
+         let preferencesDir = homeDir + "/Library/Preferences/com.motu.PCIAudio"
+         
+         guard FileManager.default.fileExists(atPath: preferencesDir) else {
+             print("Директория \(preferencesDir) не существует.")
+             return nil
+         }
+         
+         do {
+             let files = try FileManager.default.contentsOfDirectory(atPath: preferencesDir)
+             let pattern = #"^PCI-424\.bus4\.slot\d+\.plist$"#
+             let regex = try NSRegularExpression(pattern: pattern)
+             
+             for file in files {
+                 let range = NSRange(location: 0, length: file.utf16.count)
+                 if regex.firstMatch(in: file, options: [], range: range) != nil {
+                     let fullPath = preferencesDir + "/" + file
+                     print("Найден файл: \(fullPath)")
+                     return fullPath
+                 }
+             }
+         } catch {
+             print("Ошибка при чтении директории: \(error)")
+         }
+         
+         print("Файл с паттерном PCI-424.bus4.slot{номер}.plist не найден.")
+         return nil
+     }
 
     @IBOutlet weak var button1: NSButton!
     @IBOutlet weak var button2: NSButton!
@@ -16,20 +49,25 @@ class RadioController: NSViewController {
     @IBOutlet weak var button5: NSButton!
     @IBOutlet weak var button6: NSButton!
 
-    let plistPath = "/Users/computer/Library/Preferences/com.motu.PCIAudio/PCI-424.bus4.slot0.plist"
+//    let plistPath = "/Users/computer/Library/Preferences/com.motu.PCIAudio/PCI-424.bus4.slot0.plist"
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        _ = findDynamicFilePath()
         loadInitialSettings()
     }
 
     func loadInitialSettings() {
-        if let dict = NSDictionary(contentsOfFile: plistPath) as? [String: Any],
-           let inputLevels = dict["Interfaces"] as? [[String: Any]],
-           let inputLevel = inputLevels[0]["DeviceSpecific"] as? [String: Any],
-           let level = inputLevel["InputLevels"] as? Int {
-            setSelectedButtons(for: level)
+        guard let dynamicFilePath = findDynamicFilePath(),
+              let dict = NSDictionary(contentsOfFile: dynamicFilePath) as? [String: Any],
+              let inputLevels = dict["Interfaces"] as? [[String: Any]],
+              let inputLevel = inputLevels[0]["DeviceSpecific"] as? [String: Any],
+              let level = inputLevel["InputLevels"] as? Int else {
+            print("Ошибка при загрузке начальных настроек из plist.")
+            return
         }
+        
+        setSelectedButtons(for: level)
     }
 
     func setSelectedButtons(for level: Int) {
@@ -118,14 +156,16 @@ class RadioController: NSViewController {
     }
 
     func updatePlist(with level: Int) {
-        guard let dict = NSMutableDictionary(contentsOfFile: plistPath) else { return }
+        guard let dynamicFilePath = findDynamicFilePath(),
+              let dict = NSMutableDictionary(contentsOfFile: dynamicFilePath) else { return }
+
         if var inputLevels = dict["Interfaces"] as? [[String: Any]] {
             if var deviceSpecific = inputLevels[0]["DeviceSpecific"] as? [String: Any] {
                 deviceSpecific["InputLevels"] = level
                 inputLevels[0]["DeviceSpecific"] = deviceSpecific
                 dict["Interfaces"] = inputLevels
 
-                dict.write(toFile: plistPath, atomically: true)
+                dict.write(toFile: dynamicFilePath, atomically: true)
             }
         }
     }

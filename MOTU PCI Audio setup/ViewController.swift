@@ -6,6 +6,7 @@
 
 import Cocoa
 import AudioToolbox
+import Foundation
 
 // Определяем структуру для удобного хранения информации о частоте
 struct FrequencyOption {
@@ -15,8 +16,40 @@ struct FrequencyOption {
 
 class ViewController: NSViewController {
     
-    // Путь к вашему plist-файлу. Изменить имя пользователя. и номер слота, если у вас другой.
-    let filePath = "/Users/computer/Library/Preferences/com.motu.PCIAudio/PCI-424.bus4.slot0.plist"
+    
+    
+   func findDynamicFilePath() -> String? {
+        let currentUser = NSUserName()
+        print("Текущий пользователь: \(currentUser)")
+        
+        let homeDir = "/Users/\(currentUser)"
+        let preferencesDir = homeDir + "/Library/Preferences/com.motu.PCIAudio"
+        
+        guard FileManager.default.fileExists(atPath: preferencesDir) else {
+            print("Директория \(preferencesDir) не существует.")
+            return nil
+        }
+        
+        do {
+            let files = try FileManager.default.contentsOfDirectory(atPath: preferencesDir)
+            let pattern = #"^PCI-424\.bus4\.slot\d+\.plist$"#
+            let regex = try NSRegularExpression(pattern: pattern)
+            
+            for file in files {
+                let range = NSRange(location: 0, length: file.utf16.count)
+                if regex.firstMatch(in: file, options: [], range: range) != nil {
+                    let fullPath = preferencesDir + "/" + file
+                    print("Найден файл: \(fullPath)")
+                    return fullPath
+                }
+            }
+        } catch {
+            print("Ошибка при чтении директории: \(error)")
+        }
+        
+        print("Файл с паттерном PCI-424.bus4.slot{номер}.plist не найден.")
+        return nil
+    }
     
     
     @IBOutlet weak var outputChannel1Button: NSButton!
@@ -65,6 +98,7 @@ class ViewController: NSViewController {
     
     override func viewDidLoad() {
         super.viewDidLoad()
+        _ = findDynamicFilePath()
         loadOutputChannelStates()
         loadInputChannelStates()
         loadCurrentClockSource()
@@ -81,7 +115,8 @@ class ViewController: NSViewController {
 // Обработка OutputChannels -----------------------------------------------------
     
     private func countActiveOutputChannels() -> Int {
-        guard let data = FileManager.default.contents(atPath: filePath),
+        guard let filePath = findDynamicFilePath(),
+              let data = FileManager.default.contents(atPath: filePath),
               let rootDict = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any],
               let outputChannels = rootDict["OutputChannels"] as? [NSNumber]
         else {
@@ -115,7 +150,8 @@ class ViewController: NSViewController {
     // Функция для считывания текущего состояния каналов Output
     private func loadOutputChannelStates() {
         do {
-            guard let data = FileManager.default.contents(atPath: filePath),
+            guard let filePath = findDynamicFilePath(),
+                  let data = FileManager.default.contents(atPath: filePath),
                   let rootDict = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any],
                   let outputChannels = rootDict["OutputChannels"] as? [NSNumber]
             else {
@@ -151,7 +187,8 @@ class ViewController: NSViewController {
     // Изменение состояния каналов Output в plist
     private func doToggle(forIndexes indexes: (Int, Int)) {
         do {
-            guard let data = FileManager.default.contents(atPath: filePath),
+            guard let filePath = findDynamicFilePath(),
+                  let data = FileManager.default.contents(atPath: filePath),
                   let rootDict = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any],
                   var channelsArray = rootDict["OutputChannels"] as? [NSNumber]
             else {
@@ -190,7 +227,8 @@ class ViewController: NSViewController {
     
     // функция подсчёта активных каналов
     private func countActiveInputChannels() -> Int {
-        guard let data = FileManager.default.contents(atPath: filePath),
+        guard let filePath = findDynamicFilePath(),
+              let data = FileManager.default.contents(atPath: filePath),
               let rootDict = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any],
               let inputChannels = rootDict["InputChannels"] as? [NSNumber]
         else {
@@ -224,7 +262,8 @@ class ViewController: NSViewController {
     
     private func loadInputChannelStates() {
         do {
-            guard let data = FileManager.default.contents(atPath: filePath),
+            guard let filePath = findDynamicFilePath(),
+                  let data = FileManager.default.contents(atPath: filePath),
                   let rootDict = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any],
                   let inputChannels = rootDict["InputChannels"] as? [NSNumber]
             else {
@@ -259,7 +298,8 @@ class ViewController: NSViewController {
         // Метод переключения одного конкретного Input-канала
     private func doToggleInput(forIndex index: Int) {
         do {
-            guard let data = FileManager.default.contents(atPath: filePath),
+            guard let filePath = findDynamicFilePath(),
+                  let data = FileManager.default.contents(atPath: filePath),
                   let rootDict = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any],
                   var channelsArray = rootDict["InputChannels"] as? [NSNumber]
             else {
@@ -295,10 +335,11 @@ class ViewController: NSViewController {
 // обработка Clock Source ----------------------------------------------------------------------
     
     private func loadCurrentClockSource() {
-        if let dict = NSDictionary(contentsOf: URL(fileURLWithPath: filePath)) as? [String: Any],
-           let currentValue = dict["ClockSource"] as? Int {
-            selectClockSource(indexForValue: currentValue)
-        }
+        guard let dynamicFilePath = findDynamicFilePath(),
+              let dict = NSDictionary(contentsOf: URL(fileURLWithPath: dynamicFilePath)) as? [String: Any],
+              let currentValue = dict["ClockSource"] as? Int else { return }
+        
+        selectClockSource(indexForValue: currentValue)
     }
         // Выбор правильного пункта в комбобоксе
         private func selectClockSource(indexForValue: Int) {
@@ -331,14 +372,19 @@ class ViewController: NSViewController {
         
         // Метод для записи нового значения в plist
     func saveNewClockSource(value: Int) {
-        if let mutableDict = NSMutableDictionary(contentsOf: URL(fileURLWithPath: filePath)) {
-            // Обновляем значение
-            mutableDict.setValue(value, forKey: "ClockSource")
-            
-            // Перезапись файла plist
-            mutableDict.write(toFile: filePath, atomically: true)
-        } else {
-            print("Ошибка при сохранении нового значения в plist.")
+        guard let dynamicFilePath = findDynamicFilePath(),
+              let mutableDict = NSMutableDictionary(contentsOf: URL(fileURLWithPath: dynamicFilePath))
+        else {
+            print("Ошибка при открытии или поиске файла для записи.")
+            return
+        }
+        
+        // Обновление значения в словаре
+        mutableDict.setValue(value, forKey: "ClockSource")
+        
+        // Записываем изменения обратно в файл
+        if !mutableDict.write(toFile: dynamicFilePath, atomically: true) {
+            print("Ошибка при перезаписи файла.")
         }
     }
     
@@ -346,7 +392,8 @@ class ViewController: NSViewController {
     
     // Загружаем текущее значение из plist
     private func loadCurrentDefaultOutput() {
-        guard let data = FileManager.default.contents(atPath: filePath),
+        guard let filePath = findDynamicFilePath(),
+              let data = FileManager.default.contents(atPath: filePath),
               let plistData = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               let preferredOutputValue = plistData["PreferredOutput"] as? Int else { return }
 
@@ -406,23 +453,34 @@ class ViewController: NSViewController {
 
     // Читаем содержимое plist-файла
     private func readPlistFile() -> [String : Any]? {
-        if let data = FileManager.default.contents(atPath: filePath) {
-            do {
-                return try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any]
-            } catch {
-                print("Ошибка при чтении файла plist:", error.localizedDescription)
-            }
+        guard let dynamicFilePath = findDynamicFilePath(),
+              let data = FileManager.default.contents(atPath: dynamicFilePath) else {
+                  print("Ошибка при доступе к файлу plist.")
+                  return nil
         }
-        return nil
+        
+        do {
+            return try PropertyListSerialization.propertyList(from: data,
+                                                             options: [],
+                                                             format: nil) as? [String : Any]
+        } catch {
+            print("Ошибка при разборе файла plist:", error.localizedDescription)
+            return nil
+        }
     }
 
     // Записываем новый словарь обратно в plist
     private func writeToPlist(_ dictionary: NSDictionary) {
+        guard let dynamicFilePath = findDynamicFilePath() else {
+            print("Ошибка: Не удалось найти путь к файлу plist.")
+            return
+        }
+        
         do {
             let data = try PropertyListSerialization.data(fromPropertyList: dictionary, format: .xml, options: 0)
             
-            // Преобразование строки в URL
-            let url = URL(fileURLWithPath: filePath)
+            // Создаем URL на основе динамического пути
+            let url = URL(fileURLWithPath: dynamicFilePath)
             
             // Записываем данные обратно в файл
             try data.write(to: url)
@@ -435,7 +493,8 @@ class ViewController: NSViewController {
     
     // Загружаем текущее значение из plist
     private func loadCurrentDefaultInput() {
-        guard let data = FileManager.default.contents(atPath: filePath),
+        guard let filePath = findDynamicFilePath(),
+              let data = FileManager.default.contents(atPath: filePath),
               let plistData = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
               let preferredInputValue = plistData["PreferredInput"] as? Int else { return }
 
@@ -495,23 +554,32 @@ class ViewController: NSViewController {
 
     // Читаем содержимое plist-файла
     private func readInputDefaultPlistFile() -> [String : Any]? {
-        if let data = FileManager.default.contents(atPath: filePath) {
-            do {
-                return try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any]
-            } catch {
-                print("Ошибка при чтении файла plist:", error.localizedDescription)
-            }
+        guard let dynamicFilePath = findDynamicFilePath(),
+              let data = FileManager.default.contents(atPath: dynamicFilePath) else {
+            print("Ошибка при доступе к файлу plist.")
+            return nil
         }
-        return nil
+        
+        do {
+            return try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any]
+        } catch {
+            print("Ошибка при разборе файла plist:", error.localizedDescription)
+            return nil
+        }
     }
 
     // Записываем новый словарь обратно в plist
     private func writeToInputDefaultPlist(_ dictionary: NSDictionary) {
+        guard let dynamicFilePath = findDynamicFilePath() else {
+            print("Ошибка: Не удалось найти путь к файлу plist.")
+            return
+        }
+        
         do {
             let data = try PropertyListSerialization.data(fromPropertyList: dictionary, format: .xml, options: 0)
             
-            // Преобразование строки в URL
-            let url = URL(fileURLWithPath: filePath)
+            // Создаем URL на основе динамического пути
+            let url = URL(fileURLWithPath: dynamicFilePath)
             
             // Записываем данные обратно в файл
             try data.write(to: url)
@@ -683,27 +751,33 @@ class ViewController: NSViewController {
         }
         
         // Функция сохраняет новую частоту в .plist файл
-        private func saveToPlist(sampleRate: Float64) {
-            do {
-                // Чтение существующего содержимого plist файла
-                let existingDict = NSDictionary(contentsOfFile: filePath) as? [String : Any] ?? [:]
-                
-                // Обновляем словарь новым значением 'SampleRate'
-                var updatedDict = existingDict
-                updatedDict["SampleRate"] = NSNumber(value: sampleRate)
-                
-                // Записываем обновленные данные обратно в файл
-                try PropertyListSerialization.data(fromPropertyList: updatedDict, format: .xml, options: 0).write(to: URL(fileURLWithPath: filePath))
-            } catch {
-                print("Ошибка записи в plist:", error.localizedDescription)
-            }
+    private func saveToPlist(sampleRate: Float64) {
+        guard let dynamicFilePath = findDynamicFilePath() else {
+            print("Ошибка: Не удалось найти путь к файлу plist.")
+            return
         }
+        
+        do {
+            // Читаем существующее содержимое plist файла
+            let existingDict = NSDictionary(contentsOfFile: dynamicFilePath) as? [String : Any] ?? [:]
+            
+            // Обновляем словарь новым значением 'SampleRate'
+            var updatedDict = existingDict
+            updatedDict["SampleRate"] = NSNumber(value: sampleRate)
+            
+            // Записываем обновленные данные обратно в файл
+            try PropertyListSerialization.data(fromPropertyList: updatedDict, format: .xml, options: 0).write(to: URL(fileURLWithPath: dynamicFilePath))
+        } catch {
+            print("Ошибка записи в plist:", error.localizedDescription)
+        }
+    }
     
 // Обработка Stream Controls Enable Key ------------------------------------------------------------------------------------------
     
     /// Метод для загрузки текущего состояния из plist и установки его в чекбокс
         private func LoadEnableVolumeControls() {
-            guard let data = FileManager.default.contents(atPath: filePath),
+            guard let filePath = findDynamicFilePath(),
+                  let data = FileManager.default.contents(atPath: filePath),
                   let rootDict = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any],
                   let currentValue = rootDict["StreamControlsEnableKey"] as? Int else { return }
             
@@ -711,7 +785,8 @@ class ViewController: NSViewController {
         }
         
         @IBAction func volumeControlStateChanged(_ sender: NSButton) {
-            guard let data = FileManager.default.contents(atPath: filePath),
+            guard let filePath = findDynamicFilePath(),
+                  let data = FileManager.default.contents(atPath: filePath),
                   var rootDict = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any]
             else { return }
             
