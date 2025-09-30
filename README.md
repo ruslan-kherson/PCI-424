@@ -1,2 +1,2 @@
 # PCI-424
-Plist file editing app
+An application for editing Plist files. Channel switching is activated after a computer reboot.
