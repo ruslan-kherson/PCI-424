@@ -5,49 +5,69 @@
 //  Created by Computer on 15.08.2025.
 
 import Cocoa
-import AudioToolbox
 import Foundation
-
-// Определяем структуру для удобного хранения информации о частоте
-struct FrequencyOption {
-    let name: String     // Отображаемое название частоты
-    let value: Float64   // Фактическое значение частоты
-}
+import CoreAudio
 
 class ViewController: NSViewController {
     
     
+    func findDynamicFilePath() -> String? {
+            let currentUser = NSUserName()
+            let homeDir = "/Users/\(currentUser)"
+            let preferencesDir = homeDir + "/Library/Preferences/com.motu.PCIAudio"
     
-   func findDynamicFilePath() -> String? {
-        let currentUser = NSUserName()
-        print("Текущий пользователь: \(currentUser)")
-        
-        let homeDir = "/Users/\(currentUser)"
-        let preferencesDir = homeDir + "/Library/Preferences/com.motu.PCIAudio"
-        
-        guard FileManager.default.fileExists(atPath: preferencesDir) else {
-            print("Директория \(preferencesDir) не существует.")
-            return nil
-        }
-        
-        do {
-            let files = try FileManager.default.contentsOfDirectory(atPath: preferencesDir)
-            let pattern = #"^PCI-424\.bus4\.slot\d+\.plist$"#
-            let regex = try NSRegularExpression(pattern: pattern)
-            
-            for file in files {
-                let range = NSRange(location: 0, length: file.utf16.count)
-                if regex.firstMatch(in: file, options: [], range: range) != nil {
-                    let fullPath = preferencesDir + "/" + file
-                    print("Найден файл: \(fullPath)")
-                    return fullPath
+            guard FileManager.default.fileExists(atPath: preferencesDir) else {return nil}
+    
+            var dynamicFilePath: String? = nil
+            do {
+                let files = try FileManager.default.contentsOfDirectory(atPath: preferencesDir)
+                let pattern = #"^PCI-424\.bus4\.slot\d+\.plist$"#
+                let regex = try NSRegularExpression(pattern: pattern)
+    
+                for file in files {
+                    let range = NSRange(location: 0, length: file.utf16.count)
+                    if regex.firstMatch(in: file, options: [], range: range) != nil {
+                        dynamicFilePath = preferencesDir + "/" + file
+                        break
+                    }
                 }
-            }
-        } catch {
-            print("Ошибка при чтении директории: \(error)")
+            } catch {return nil}
+    
+            return dynamicFilePath
         }
+    
+    func getDeviceIDByName(deviceName: String = "PCI-424") -> AudioDeviceID? {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementWildcard
+        )
         
-        print("Файл с паттерном PCI-424.bus4.slot{номер}.plist не найден.")
+        var dataSize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize)
+        if status != noErr { return nil }
+        
+        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+        status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceIDs)
+        if status != noErr { return nil }
+        
+        for deviceID in deviceIDs {
+            var namePropertyAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceNameCFString,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementWildcard
+            )
+            
+            var nameSize = UInt32(MemoryLayout<CFString>.size)
+            let namePtr = UnsafeMutablePointer<CFString?>.allocate(capacity: 1)
+            defer { namePtr.deallocate() }
+            namePtr.pointee = nil
+            status = AudioObjectGetPropertyData(deviceID, &namePropertyAddress, 0, nil, &nameSize, namePtr)
+            if status == noErr, let name = namePtr.pointee as String?, name == deviceName {
+                return deviceID
+            }
+        }
         return nil
     }
     
@@ -84,13 +104,17 @@ class ViewController: NSViewController {
     
     
     
-    @IBOutlet weak var ClockSource: NSComboBox!
+    @IBAction func MotuChannelName(_ sender: NSButton) {
+        
+        let process = Process()
+            process.launchPath = "/usr/bin/open"
+            process.arguments = ["-b", "com.motu.ChannelNamerAwesome"]
+            process.launch()
+        
+    }
     
-    @IBOutlet weak var defaultOutput: NSComboBox!
     
-    @IBOutlet weak var defaultInput: NSComboBox!
     
-    @IBOutlet weak var sampleRateComboBox: NSComboBox!
     
     @IBOutlet weak var enableVolumeConrols: NSButton!
     
@@ -106,13 +130,11 @@ class ViewController: NSViewController {
     
     override func viewDidLoad() {
         super.viewDidLoad()
-        loadCurrentClockSource()
-        loadCurrentDefaultOutput()
-        loadCurrentDefaultInput()
+        getDefaultChannelsOutput()
+        getDefaultChannelsInput()
+        getSampleRate()
+        getClockSource()
         LoadEnableVolumeControls()
-        self.sampleRateComboBox.target = self
-        self.sampleRateComboBox.action = #selector(comboBoxSelected(_:))
-        setInitialFrequencyInComboBox()
         
         inputButtons = [
             inputChannel1Button, inputChannel2Button, inputChannel3Button,
@@ -130,6 +152,8 @@ class ViewController: NSViewController {
         
         loadChannelStates()
     }
+    
+    
     
 // Обработка Channels -------------------------------------------------------------------------------------------------
     
@@ -276,26 +300,29 @@ class ViewController: NSViewController {
     
 // обработка Clock Source ----------------------------------------------------------------------
     
-    private func loadCurrentClockSource() {
+    
+    
+    private func getClockSource() {
         guard let dynamicFilePath = findDynamicFilePath(),
               let dict = NSDictionary(contentsOf: URL(fileURLWithPath: dynamicFilePath)) as? [String: Any],
               let currentValue = dict["ClockSource"] as? Int else { return }
         
         selectClockSource(indexForValue: currentValue)
     }
-        // Выбор правильного пункта в комбобоксе
         private func selectClockSource(indexForValue: Int) {
             switch indexForValue {
             case 0: ClockSource.selectItem(at: 0)  // "Internal"
             case 1: ClockSource.selectItem(at: 1)  // "ADAT"
-            case 2: ClockSource.selectItem(at: 2)  // "SMPTE|"
+            case 2: ClockSource.selectItem(at: 2)  // "SMPTE"
             case 3: ClockSource.selectItem(at: 3)  // "Word Clock In"
             default: break
             }
         }
+    
+    @IBOutlet weak var ClockSource: NSComboBox!
         
-        // Обработчик изменения выбора в комбобоксе
-        @IBAction func clockSourceChanged(_ sender: NSComboBox) {
+        
+    @IBAction func clockSourceChanged(_ sender: NSComboBox) {
             let selectedItemIndex = sender.indexOfSelectedItem
             
             // Определение нового значения на основе выбора
@@ -303,7 +330,7 @@ class ViewController: NSViewController {
             switch selectedItemIndex {
             case 0: newValue = 0   // "Internal"
             case 1: newValue = 1   // "ADAT"
-            case 2: newValue = 2   // "SMPTE|"
+            case 2: newValue = 2   // "SMPTE"
             case 3: newValue = 3   // "Word Clock In"
             default: return
             }
@@ -330,393 +357,416 @@ class ViewController: NSViewController {
         }
     }
     
- // Озаботка Default Output -----------------------------------------------------------------------------
+ // Оработка Default Output -----------------------------------------------------------------------------
     
-    // Загружаем текущее значение из plist
-    private func loadCurrentDefaultOutput() {
-        guard let filePath = findDynamicFilePath(),
-              let data = FileManager.default.contents(atPath: filePath),
-              let plistData = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-              let preferredOutputValue = plistData["PreferredOutput"] as? Int else { return }
-
-        // Устанавливаем индекс соответствующего пункта комбобокса
-        switch preferredOutputValue {
-            case 1: defaultOutput.selectItem(at: 0)
-            case 3: defaultOutput.selectItem(at: 1)
-            case 5: defaultOutput.selectItem(at: 2)
-            case 7: defaultOutput.selectItem(at: 3)
-            case 9: defaultOutput.selectItem(at: 4)
-            case 11: defaultOutput.selectItem(at: 5)
-            case 13: defaultOutput.selectItem(at: 6)
-            case 15: defaultOutput.selectItem(at: 7)
-            case 17: defaultOutput.selectItem(at: 8)
-            case 19: defaultOutput.selectItem(at: 9)
-            case 21: defaultOutput.selectItem(at: 10)
-            case 23: defaultOutput.selectItem(at: 11)
-            default: break
-        }
+    @IBOutlet weak var DefaultChannelsOutput: NSComboBox!
+    
+    @IBAction func DefaultChannelsOutput(_ sender: NSComboBox) {
+        
+        setDefaultChannelsOutput()
     }
 
-    // Обработчик события выбора другого элемента в комбобоксе
-    @IBAction func outputDefaultChanged(_ sender: NSComboBox) {
-        updateOutputDefaultPlistWithSelectedIndex(sender.indexOfSelectedItem)
-    }
-
-    // Обновляем файл plist новым значением
-    private func updateOutputDefaultPlistWithSelectedIndex(_ index: Int) {
-        guard let existingPlist = readPlistFile() else { return }
-
-        // Создаем mutable dictionary напрямую, без опциональности
-        let mutableDict = NSMutableDictionary(dictionary: existingPlist)
-
-        // Меняем значение в зависимости от индекса
-        let newValue: Int
-        switch index {
-            case 0: newValue = 1
-            case 1: newValue = 3
-            case 2: newValue = 5
-            case 3: newValue = 7
-            case 4: newValue = 9
-            case 5: newValue = 11
-            case 6: newValue = 13
-            case 7: newValue = 15
-            case 8: newValue = 17
-            case 9: newValue = 19
-            case 10: newValue = 21
-            case 11: newValue = 23
-            // Добавьте остальные индексы до 23
-            default: newValue = 1
-        }
-
-        mutableDict.setObject(newValue, forKey: "PreferredOutput" as NSString)
-
-        writeToPlist(mutableDict as NSDictionary)
-    }
-
-    // Читаем содержимое plist-файла
-    private func readPlistFile() -> [String : Any]? {
-        guard let dynamicFilePath = findDynamicFilePath(),
-              let data = FileManager.default.contents(atPath: dynamicFilePath) else {
-                  print("Ошибка при доступе к файлу plist.")
-                  return nil
+    func getDefaultChannelsOutput() {
+        
+        guard let deviceID = getDeviceIDByName(deviceName: "PCI-424") else { return }
+        
+        var totalChannels: UInt32 = 0
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var dataSize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, nil, &dataSize)
+        if sizeStatus != noErr {return}
+        
+        let bufferList = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(dataSize))
+        defer { bufferList.deallocate() }
+        
+        let status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &dataSize, bufferList)
+        if status == noErr {
+            let numBuffers = bufferList.pointee.mNumberBuffers
+            let buffersBase = UnsafeRawPointer(bufferList).advanced(by: MemoryLayout<AudioBufferList>.offset(of: \AudioBufferList.mBuffers)!).assumingMemoryBound(to: AudioBuffer.self)
+            for i in 0..<numBuffers {
+                let buffer = buffersBase[Int(i)]
+                totalChannels += buffer.mNumberChannels
+            }
         }
         
-        do {
-            return try PropertyListSerialization.propertyList(from: data,
-                                                             options: [],
-                                                             format: nil) as? [String : Any]
-        } catch {
-            print("Ошибка при разборе файла plist:", error.localizedDescription)
-            return nil
-        }
-    }
+        // Цикл по парам
+        var channelIndex = 1
+        while channelIndex <= Int(totalChannels) {
+            
+            var leftName: String = "Channel \(channelIndex)"
+            var leftQualifier = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyChannelNameCFString,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: UInt32(channelIndex)
+            )
+            var leftPtr: Unmanaged<CFString>? = nil
+            var propertySize: UInt32 = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            let leftStatus = AudioObjectGetPropertyData(deviceID, &leftQualifier, 0, nil, &propertySize, &leftPtr)
+            if leftStatus == noErr, let name = leftPtr?.takeRetainedValue() as String?, !name.isEmpty {
+                leftName = name
+            }
+            
+            let rightIndex = channelIndex + 1
+            var pairName: String
+            if rightIndex <= Int(totalChannels) {
+                // Аналогично для правого
+                var rightName: String = "Channel \(rightIndex)"
+                var rightQualifier = AudioObjectPropertyAddress(
+                    mSelector: kAudioDevicePropertyChannelNumberNameCFString,
+                    mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: UInt32(rightIndex)
+                )
+                var rightPtr: Unmanaged<CFString>? = nil
+                let rightStatus = AudioObjectGetPropertyData(deviceID, &rightQualifier, 0, nil, &propertySize, &rightPtr)
+                if rightStatus == noErr, let name = rightPtr?.takeRetainedValue() as String?, !name.isEmpty {
+                    rightName = name
+                }
+                
+                pairName = "\(leftName) - \(rightName)"
+                channelIndex += 2
+                
+                DefaultChannelsOutput.addItem(withObjectValue: pairName)
+            }
+            
+            var preferredChannels: [UInt32] = [0, 0]
+            propertyAddress.mSelector = kAudioDevicePropertyPreferredChannelsForStereo
+            propertyAddress.mScope = kAudioDevicePropertyScopeOutput
+            propertyAddress.mElement = kAudioObjectPropertyElementMain
+            propertySize = UInt32(MemoryLayout<[UInt32]>.size)
+            let prefStatus = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &propertySize, &preferredChannels)
 
-    // Записываем новый словарь обратно в plist
-    private func writeToPlist(_ dictionary: NSDictionary) {
-        guard let dynamicFilePath = findDynamicFilePath() else {
-            print("Ошибка: Не удалось найти путь к файлу plist.")
-            return
-        }
-        
-        do {
-            let data = try PropertyListSerialization.data(fromPropertyList: dictionary, format: .xml, options: 0)
-            
-            // Создаем URL на основе динамического пути
-            let url = URL(fileURLWithPath: dynamicFilePath)
-            
-            // Записываем данные обратно в файл
-            try data.write(to: url)
-        } catch {
-            print("Ошибка при записи файла plist:", error.localizedDescription)
+            if prefStatus == noErr {
+                let leftIndex = Int(preferredChannels[0])
+                let rightIndex = Int(preferredChannels[1])
+                if leftIndex > 0 && rightIndex == leftIndex + 1 && leftIndex % 2 == 1 {
+                    let pairIndex = (leftIndex - 1) / 2
+                    if pairIndex < DefaultChannelsOutput.numberOfItems {
+                        DefaultChannelsOutput.selectItem(at: pairIndex)
+                    }
+                }
+            }
         }
     }
+        
+     func saveOutputToPlist(preferredOutputValue: Int) {
+         guard let filePath = findDynamicFilePath() else {return}
+         guard let data = FileManager.default.contents(atPath: filePath) else {return}
+         guard var plistDict = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {return}
+            plistDict["PreferredOutput"] = preferredOutputValue
+            guard let plistData = try? PropertyListSerialization.data(fromPropertyList: plistDict, format: .xml, options: 0),
+                  (FileManager.default.createFile(atPath: filePath, contents: plistData, attributes: nil)) else {return}
+        }
+    
+    func setDefaultChannelsOutput() {
+            guard let deviceID = getDeviceIDByName(deviceName: "PCI-424") else { return }
+            
+            let selectedIndex = DefaultChannelsOutput.indexOfSelectedItem
+            if selectedIndex < 0 || selectedIndex >= 24 { return }
+            
+            let channel1 = UInt32(selectedIndex * 2 + 1)
+            let channel2 = UInt32(selectedIndex * 2 + 2)
+            var channels: [UInt32] = [channel1, channel2]
+            
+            var propertyAddress = AudioObjectPropertyAddress(
+                mSelector: 0x64636832, // 'dch2'  kAudioDevicePropertyPreferredChannelsForStereo,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: 0 //kAudioObjectPropertyElementWildcard
+            )
+            
+            let dataSize = UInt32(MemoryLayout<UInt32>.size * channels.count)
+            let status = AudioObjectSetPropertyData(deviceID, &propertyAddress, 0, nil, dataSize, &channels)
+            if status != noErr {
+                print("Error setting default output channels: \(status)")
+            }
+        
+                // --- Сохранение в plist ---
+        
+                let preferredOutputValues: [Int] = [
+                    0x1,  // каналы 1,2
+                    0x3,  // каналы 3,4
+                    0x5,  // каналы 5,6
+                    0x7,  // каналы 7,8
+                    0x9,  // каналы 9,10
+                    0x11,  // каналы 11,12
+                    0x13,  // каналы 13,14
+                    0x15,  // каналы 15,16
+                    0x17, // каналы 17,18
+                    0x19, // каналы 19,20
+                    0x21, // каналы 21,22
+                    0x23  // каналы 23,24
+                ]
+        
+        guard selectedIndex < preferredOutputValues.count else {return}
+        
+                let preferredOutputValue = preferredOutputValues[selectedIndex]
+        
+        saveOutputToPlist(preferredOutputValue: preferredOutputValue)
+            
+        }
+
+    
     
 // Обработка Input Default -------------------------------------------------------------------------------------
     
-    // Загружаем текущее значение из plist
-    private func loadCurrentDefaultInput() {
-        guard let filePath = findDynamicFilePath(),
-              let data = FileManager.default.contents(atPath: filePath),
-              let plistData = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-              let preferredInputValue = plistData["PreferredInput"] as? Int else { return }
+    
+    @IBOutlet weak var DefaultChannelsInput: NSComboBox!
 
-        // Устанавливаем индекс соответствующего пункта комбобокса
-        switch preferredInputValue {
-            case 1: defaultInput.selectItem(at: 0)
-            case 3: defaultInput.selectItem(at: 1)
-            case 5: defaultInput.selectItem(at: 2)
-            case 7: defaultInput.selectItem(at: 3)
-            case 9: defaultInput.selectItem(at: 4)
-            case 11: defaultInput.selectItem(at: 5)
-            case 13: defaultInput.selectItem(at: 6)
-            case 15: defaultInput.selectItem(at: 7)
-            case 17: defaultInput.selectItem(at: 8)
-            case 19: defaultInput.selectItem(at: 9)
-            case 21: defaultInput.selectItem(at: 10)
-            case 23: defaultInput.selectItem(at: 11)
-            default: break
-        }
+    @IBAction func DefaultChannelsInput(_ sender: NSComboBox) {
+        setDefaultChannelsInput()
     }
 
-    // Обработчик события выбора другого элемента в комбобоксе
-    @IBAction func inputDefaultChanged(_ sender: NSComboBox) {
-        updateInputDefaultPlistWithSelectedIndex(sender.indexOfSelectedItem)
-    }
-
-    // Обновляем файл plist новым значением
-    private func updateInputDefaultPlistWithSelectedIndex(_ index: Int) {
-        guard let existingPlist = readPlistFile() else { return }
-
-        // Создаем mutable dictionary напрямую, без опциональности
-        let mutableDict = NSMutableDictionary(dictionary: existingPlist)
-
-        // Меняем значение в зависимости от индекса
-        let newValue: Int
-        switch index {
-            case 0: newValue = 1
-            case 1: newValue = 3
-            case 2: newValue = 5
-            case 3: newValue = 7
-            case 4: newValue = 9
-            case 5: newValue = 11
-            case 6: newValue = 13
-            case 7: newValue = 15
-            case 8: newValue = 17
-            case 9: newValue = 19
-            case 10: newValue = 21
-            case 11: newValue = 23
-            // Добавьте остальные индексы до 23
-            default: newValue = 1
-        }
-
-        mutableDict.setObject(newValue, forKey: "PreferredInput" as NSString)
-
-        writeToPlist(mutableDict as NSDictionary)
-    }
-
-    // Читаем содержимое plist-файла
-    private func readInputDefaultPlistFile() -> [String : Any]? {
-        guard let dynamicFilePath = findDynamicFilePath(),
-              let data = FileManager.default.contents(atPath: dynamicFilePath) else {
-            print("Ошибка при доступе к файлу plist.")
-            return nil
+    func getDefaultChannelsInput() {
+        
+        guard let deviceID = getDeviceIDByName(deviceName: "PCI-424") else { return }
+        
+        var totalChannels: UInt32 = 0
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamConfiguration,
+            mScope: kAudioDevicePropertyScopeInput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        
+        var dataSize: UInt32 = 0
+        let sizeStatus = AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, nil, &dataSize)
+        if sizeStatus != noErr {return}
+        
+        let bufferList = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(dataSize))
+        defer { bufferList.deallocate() }
+        
+        let status = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &dataSize, bufferList)
+        if status == noErr {
+            let numBuffers = bufferList.pointee.mNumberBuffers
+            let buffersBase = UnsafeRawPointer(bufferList).advanced(by: MemoryLayout<AudioBufferList>.offset(of: \AudioBufferList.mBuffers)!).assumingMemoryBound(to: AudioBuffer.self)
+            for i in 0..<numBuffers {
+                let buffer = buffersBase[Int(i)]
+                totalChannels += buffer.mNumberChannels
+            }
         }
         
-        do {
-            return try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any]
-        } catch {
-            print("Ошибка при разборе файла plist:", error.localizedDescription)
-            return nil
-        }
-    }
+        // Цикл по парам
+        var channelIndex = 1
+        while channelIndex <= Int(totalChannels) {
+            
+            var leftName: String = "Channel \(channelIndex)"
+            var leftQualifier = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyChannelNameCFString,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: UInt32(channelIndex)
+            )
+            var leftPtr: Unmanaged<CFString>? = nil
+            var propertySize: UInt32 = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            let leftStatus = AudioObjectGetPropertyData(deviceID, &leftQualifier, 0, nil, &propertySize, &leftPtr)
+            if leftStatus == noErr, let name = leftPtr?.takeRetainedValue() as String?, !name.isEmpty {
+                leftName = name
+            }
+            
+            let rightIndex = channelIndex + 1
+            var pairName: String
+            if rightIndex <= Int(totalChannels) {
+                // Аналогично для правого
+                var rightName: String = "Channel \(rightIndex)"
+                var rightQualifier = AudioObjectPropertyAddress(
+                    mSelector: kAudioDevicePropertyChannelNumberNameCFString,
+                    mScope: kAudioObjectPropertyScopeGlobal,
+                    mElement: UInt32(rightIndex)
+                )
+                var rightPtr: Unmanaged<CFString>? = nil
+                let rightStatus = AudioObjectGetPropertyData(deviceID, &rightQualifier, 0, nil, &propertySize, &rightPtr)
+                if rightStatus == noErr, let name = rightPtr?.takeRetainedValue() as String?, !name.isEmpty {
+                    rightName = name
+                }
+                
+                pairName = "\(leftName) - \(rightName)"
+                channelIndex += 2
+                
+                DefaultChannelsInput.addItem(withObjectValue: pairName)
+            }
+            
+            var preferredChannels: [UInt32] = [0, 0]
+            propertyAddress.mSelector = kAudioDevicePropertyPreferredChannelsForStereo
+            propertyAddress.mScope = kAudioDevicePropertyScopeInput
+            propertyAddress.mElement = kAudioObjectPropertyElementMain
+            propertySize = UInt32(MemoryLayout<[UInt32]>.size)
+            let prefStatus = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &propertySize, &preferredChannels)
 
-    // Записываем новый словарь обратно в plist
-    private func writeToInputDefaultPlist(_ dictionary: NSDictionary) {
-        guard let dynamicFilePath = findDynamicFilePath() else {
-            print("Ошибка: Не удалось найти путь к файлу plist.")
-            return
-        }
-        
-        do {
-            let data = try PropertyListSerialization.data(fromPropertyList: dictionary, format: .xml, options: 0)
-            
-            // Создаем URL на основе динамического пути
-            let url = URL(fileURLWithPath: dynamicFilePath)
-            
-            // Записываем данные обратно в файл
-            try data.write(to: url)
-        } catch {
-            print("Ошибка при записи файла plist:", error.localizedDescription)
+            if prefStatus == noErr {
+                let leftIndex = Int(preferredChannels[0])
+                let rightIndex = Int(preferredChannels[1])
+                if leftIndex > 0 && rightIndex == leftIndex + 1 && leftIndex % 2 == 1 {
+                    let pairIndex = (leftIndex - 1) / 2
+                    if pairIndex < DefaultChannelsInput.numberOfItems {
+                        DefaultChannelsInput.selectItem(at: pairIndex)
+                    }
+                }
+            }
         }
     }
+        
+     func saveInputToPlist(preferredInputValue: Int) {
+         guard let filePath = findDynamicFilePath() else {return}
+         guard let data = FileManager.default.contents(atPath: filePath) else {return}
+         guard var plistDict = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {return}
+            plistDict["PreferredInput"] = preferredInputValue
+            guard let plistData = try? PropertyListSerialization.data(fromPropertyList: plistDict, format: .xml, options: 0),
+                  (FileManager.default.createFile(atPath: filePath, contents: plistData, attributes: nil)) else {return}
+        }
+    
+    func setDefaultChannelsInput() {
+            guard let deviceID = getDeviceIDByName(deviceName: "PCI-424") else { return }
+            
+            let selectedIndex = DefaultChannelsInput.indexOfSelectedItem
+            if selectedIndex < 0 || selectedIndex >= 24 { return }
+            
+            let channel1 = UInt32(selectedIndex * 2 + 1)
+            let channel2 = UInt32(selectedIndex * 2 + 2)
+            var channels: [UInt32] = [channel1, channel2]
+            
+            var propertyAddress = AudioObjectPropertyAddress(
+                mSelector: 0x64636832, // 'dch2'  kAudioDevicePropertyPreferredChannelsForStereo,
+                mScope: kAudioDevicePropertyScopeOutput,
+                mElement: 0 //kAudioObjectPropertyElementWildcard
+            )
+            
+            let dataSize = UInt32(MemoryLayout<UInt32>.size * channels.count)
+            let status = AudioObjectSetPropertyData(deviceID, &propertyAddress, 0, nil, dataSize, &channels)
+            if status != noErr {
+                print("Error setting default output channels: \(status)")
+            }
+        
+                // --- Сохранение в plist ---
+        
+                let preferredInputValues: [Int] = [
+                    0x1,  // каналы 1,2
+                    0x3,  // каналы 3,4
+                    0x5,  // каналы 5,6
+                    0x7,  // каналы 7,8
+                    0x9,  // каналы 9,10
+                    0x11,  // каналы 11,12
+                    0x13,  // каналы 13,14
+                    0x15,  // каналы 15,16
+                    0x17, // каналы 17,18
+                    0x19, // каналы 19,20
+                    0x21, // каналы 21,22
+                    0x23  // каналы 23,24
+                ]
+        
+        guard selectedIndex < preferredInputValues.count else {return}
+        
+                let preferredInputValue = preferredInputValues[selectedIndex]
+        
+        saveInputToPlist(preferredInputValue: preferredInputValue)
+            
+        }
+
+    
     
 // Обработка Sample Rate ----------------------------------------------------------------------------------------
     
-    // Доступные варианты частот
-        let frequencies: [FrequencyOption] = [
-            FrequencyOption(name: "44100", value: 44_100),
-            FrequencyOption(name: "48000", value: 48_000),
-            FrequencyOption(name: "88200", value: 88_200),
-            FrequencyOption(name: "96000", value: 96_000)
-        ]
+    
+    @IBOutlet weak var readSampleRate: NSComboBox!
+    
+    @IBAction func writeSampleRate(_ sender: NSComboBox) {
+        
+        setSampleRate()
+    }
+    
+    func getSampleRate() {
+        guard let deviceID = getDeviceIDByName(deviceName: "PCI-424") else { return }
 
-    @objc func comboBoxSelected(_ sender: Any?) {
-            let index = sampleRateComboBox.indexOfSelectedItem
-            guard index >= 0 && index < frequencies.count else { return }
-            
-            let selectedFrequency = frequencies[index].value
-            changeSampleRate(selectedFrequency)
-            
-            // Сохраняем новое значение SampleRate в plist-файл
-            saveToPlist(sampleRate: selectedFrequency)
-        }
-        
-        private func changeSampleRate(_ newSampleRate: Float64) {
-            // Ищем нужное устройство по его уникальному имени
-            guard let targetDeviceID = findDeviceByName("PCI-424") else { return }
-            
-            // Создаем изменяемую копию адреса свойства
-            var propertyAddress = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyNominalSampleRate,
-                mScope: kAudioDevicePropertyScopeOutput,
-                mElement: kAudioObjectPropertyElementMaster
-            )
-            
-            // Передача новой частоты по ссылке должна происходить через изменяемую копию
-            var mutableNewSampleRate = newSampleRate
-            
-            // Установка новой частоты выборки
-            _ = AudioObjectSetPropertyData(targetDeviceID, &propertyAddress, 0, nil, UInt32(MemoryLayout<Float64>.size), &mutableNewSampleRate)
-        }
-        
-        /// Поиск устройства по его уникальному имени
-        private func findDeviceByName(_ deviceName: String) -> AudioDeviceID? {
-            var deviceCount = AudioObjectPropertyAddress(
-                mSelector: kAudioHardwarePropertyDevices,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMaster
-            )
-            
-            var sizeOfArray: UInt32 = 0
-            AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &deviceCount, 0, nil, &sizeOfArray)
-            
-            if let dataPtr = malloc(Int(sizeOfArray)) {
-                defer { free(dataPtr) }
-                
-                let result = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &deviceCount, 0, nil, &sizeOfArray, dataPtr)
-                if result != noErr {
-                    return nil
-                }
-                
-                let numDevices = Int(sizeOfArray) / MemoryLayout<AudioDeviceID>.stride
-                for i in 0..<numDevices {
-                    let deviceID = dataPtr.load(fromByteOffset: i * MemoryLayout<AudioDeviceID>.stride, as: AudioDeviceID.self)
-                    
-                    // Читаем имя текущего устройства
-                    let deviceNameString = getDeviceName(deviceID)
-                    if deviceNameString.contains(deviceName) {
-                        return deviceID
-                    }
-                }
-            }
-            
-            return nil
-        }
-        
-        /// Возвращает имя устройства по его ID
-        private func getDeviceName(_ deviceID: AudioDeviceID) -> String {
-            var deviceName: CFString?
-            var propAddr = AudioObjectPropertyAddress(
-                mSelector: kAudioObjectPropertyName,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMaster
-            )
-            
-            var size: UInt32 = 0
-            AudioObjectGetPropertyDataSize(deviceID, &propAddr, 0, nil, &size)
-            
-            if size > 0 {
-                let buffer = UnsafeMutablePointer<CFString>.allocate(capacity: 1)
-                defer { buffer.deallocate() }
-                
-                _ = AudioObjectGetPropertyData(deviceID, &propAddr, 0, nil, &size, buffer)
-                deviceName = buffer.pointee
-            }
-            
-            return deviceName.map(String.init(describing:)) ?? ""
-        }
-        
-        /// Установить начальную частоту в комбобокс
-        private func setInitialFrequencyInComboBox() {
-            // Получаем текущую частоту устройства
-            guard let currentFrequency = readCurrentSystemFrequency(forDeviceNamed: "PCI-424") else { return }
-            
-            // Ищем подходящую частоту из доступных опций
-            let matchingIndex = frequencies.firstIndex { option in
-                abs(option.value - currentFrequency) < 1 // Допустимая погрешность 1 Гц
-            }
-            
-            // Если найдена соответствующая частота, выбираем её в комбобоксе
-            if let validIndex = matchingIndex {
-                sampleRateComboBox.selectItem(at: Int(UInt32(validIndex)))
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyAvailableNominalSampleRates,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMaster
+        )
+
+        var size: UInt32 = 0
+
+        var result = AudioObjectGetPropertyDataSize(deviceID, &propertyAddress, 0, nil, &size)
+
+        let numSampleRates = Int(size) / MemoryLayout<AudioValueRange>.size
+        var sampleRates = [AudioValueRange](repeating: AudioValueRange(mMinimum: 0, mMaximum: 0), count: numSampleRates)
+
+        result = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &size, &sampleRates)
+
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.groupingSeparator = " "
+        formatter.groupingSize = 3
+        formatter.usesGroupingSeparator = true
+
+        readSampleRate.removeAllItems()
+
+        for rate in sampleRates {
+            if let formattedRate = formatter.string(from: NSNumber(value: rate.mMinimum)) {
+                readSampleRate.addItem(withObjectValue: formattedRate)
             }
         }
-        
-        /// Читает текущую частоту указанного устройства
-        private func readCurrentSystemFrequency(forDeviceNamed deviceName: String) -> Float64? {
-            // Получаем список всех устройств
-            var devicesListForSearch = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
-                                                                 mScope: kAudioObjectPropertyScopeGlobal,
-                                                                 mElement: kAudioObjectPropertyElementMaster)
-            
-            var sizeForSearch: UInt32 = 0
-            AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &devicesListForSearch, 0, nil, &sizeForSearch)
-            
-            // Рассчитываем количество устройств
-            let count = Int(sizeForSearch) / MemoryLayout<AudioDeviceID>.size
-            let listBuffer = UnsafeMutablePointer<AudioDeviceID>.allocate(capacity: count)
-            defer { listBuffer.deallocate() }
-            
-            // Получаем сами устройства
-            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &devicesListForSearch, 0, nil, &sizeForSearch, listBuffer)
-            
-            // Ищем устройство с указанным именем
-            for i in 0 ..< count {
-                let deviceID = listBuffer[i]
-                
-                // Получаем имя устройства
-                let deviceNameString = getDeviceName(deviceID)
-                
-                // Если нашли устройство с нашим именем
-                if deviceNameString.contains(deviceName) {
-                    // Получаем частоту устройства
-                    var propertyAddress = AudioObjectPropertyAddress(
-                        mSelector: kAudioDevicePropertyNominalSampleRate,
-                        mScope: kAudioDevicePropertyScopeOutput,
-                        mElement: kAudioObjectPropertyElementMaster
-                    )
-                    
-                    var sizeFreq: UInt32 = UInt32(MemoryLayout<Float64>.size)
-                    var frequencyValue: Float64 = 0
-                    
-                    let result = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &sizeFreq, &frequencyValue)
-                    
-                    if result == noErr {
-                        return frequencyValue
-                    } else {
-                        break
-                    }
-                }
-            }
-            
-            return nil
+
+        var currentRate: Float64 = 0
+        var currentRateSize: UInt32 = UInt32(MemoryLayout<Float64>.size)
+        propertyAddress.mSelector = kAudioDevicePropertyNominalSampleRate
+        result = AudioObjectGetPropertyData(deviceID, &propertyAddress, 0, nil, &currentRateSize, &currentRate)
+        guard result == noErr else { print("Error getting current sample rate: \(result)"); return }
+
+        if let formattedCurrentRate = formatter.string(from: NSNumber(value: currentRate)) {
+            readSampleRate.selectItem(withObjectValue: formattedCurrentRate)
         }
-        
-        // Функция сохраняет новую частоту в .plist файл
-    private func saveToPlist(sampleRate: Float64) {
-        guard let dynamicFilePath = findDynamicFilePath() else {
-            print("Ошибка: Не удалось найти путь к файлу plist.")
+    }
+
+    func setSampleRate() {
+        guard let deviceID = getDeviceIDByName(deviceName: "PCI-424") else { return }
+        guard let selectedRateString = readSampleRate.objectValueOfSelectedItem as? String else { return }
+
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.groupingSeparator = " "
+        formatter.groupingSize = 3
+        formatter.usesGroupingSeparator = true
+
+        guard let selectedRateNSNumber = formatter.number(from: selectedRateString),
+              let selectedRate = Float64(exactly: selectedRateNSNumber.doubleValue) else { return }
+
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMaster
+        )
+
+        var newRate: Float64 = selectedRate
+        let size: UInt32 = UInt32(MemoryLayout<Float64>.size)
+
+        let result = AudioObjectSetPropertyData(deviceID, &propertyAddress, 0, nil, size, &newRate)
+
+        guard result == noErr else {
+            print("Error setting sample rate: \(result)")
             return
         }
         
-        do {
-            // Читаем существующее содержимое plist файла
-            let existingDict = NSDictionary(contentsOfFile: dynamicFilePath) as? [String : Any] ?? [:]
-            
-            // Обновляем словарь новым значением 'SampleRate'
-            var updatedDict = existingDict
-            updatedDict["SampleRate"] = NSNumber(value: sampleRate)
-            
-            // Записываем обновленные данные обратно в файл
-            try PropertyListSerialization.data(fromPropertyList: updatedDict, format: .xml, options: 0).write(to: URL(fileURLWithPath: dynamicFilePath))
-        } catch {
-            print("Ошибка записи в plist:", error.localizedDescription)
-        }
+        saveSampleRateToPlist(sampleRate: newRate)
     }
+
+    
+    func saveSampleRateToPlist(sampleRate: Float64) {
+        guard let dynamicFilePath = findDynamicFilePath() else {return}
+    
+            do {
+                let existingDict = NSDictionary(contentsOfFile: dynamicFilePath) as? [String : Any] ?? [:]
+                var updatedDict = existingDict
+                updatedDict["SampleRate"] = NSNumber(value: sampleRate)
+                try PropertyListSerialization.data(fromPropertyList: updatedDict, format: .xml, options: 0).write(to: URL(fileURLWithPath: dynamicFilePath))
+            } catch {
+                print("Ошибка записи в plist:", error.localizedDescription)
+            }
+        }
+
     
 // Обработка Stream Controls Enable Key ------------------------------------------------------------------------------------------
     
-    /// Метод для загрузки текущего состояния из plist и установки его в чекбокс
         private func LoadEnableVolumeControls() {
             guard let filePath = findDynamicFilePath(),
                   let data = FileManager.default.contents(atPath: filePath),
@@ -732,13 +782,11 @@ class ViewController: NSViewController {
                   var rootDict = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String : Any]
             else { return }
             
-            // Изменяем значение StreamControlsEnableKey
             rootDict["StreamControlsEnableKey"] = sender.state.rawValue
             
             do {
                 let updatedData = try PropertyListSerialization.data(fromPropertyList: rootDict, format: .xml, options: 0)
                 
-                // Запись обновленного plist обратно
                 try updatedData.write(to: URL(fileURLWithPath: filePath))
             } catch {
                 print("Ошибка обновления plist:", error.localizedDescription)
