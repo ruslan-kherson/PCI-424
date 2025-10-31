@@ -225,7 +225,7 @@ class ViewController: NSViewController {
             // Считаем количество активных Output-каналов, учитывая двойственность
             let activeOutputCount = outputButtons.reduce(into: 0) { result, button in
                 if button.state == .on {
-                    result += 2 
+                    result += 2
                     
                 }
             }
@@ -357,7 +357,7 @@ class ViewController: NSViewController {
         }
     }
     
- // Оработка Default Output -----------------------------------------------------------------------------
+ // Default Stereo Channels Output -----------------------------------------------------------------------------
     
     @IBOutlet weak var DefaultChannelsOutput: NSComboBox!
     
@@ -473,9 +473,9 @@ class ViewController: NSViewController {
             var channels: [UInt32] = [channel1, channel2]
             
             var propertyAddress = AudioObjectPropertyAddress(
-                mSelector: 0x64636832, // 'dch2'  kAudioDevicePropertyPreferredChannelsForStereo,
+                mSelector: kAudioDevicePropertyPreferredChannelsForStereo, //0x64636832, // 'dch2'
                 mScope: kAudioDevicePropertyScopeOutput,
-                mElement: 0 //kAudioObjectPropertyElementWildcard
+                mElement: kAudioObjectPropertyElementWildcard
             )
             
             let dataSize = UInt32(MemoryLayout<UInt32>.size * channels.count)
@@ -483,7 +483,6 @@ class ViewController: NSViewController {
             if status != noErr {
                 print("Error setting default output channels: \(status)")
             }
-        
                 // --- Сохранение в plist ---
         
                 let preferredOutputValues: [Int] = [
@@ -511,7 +510,7 @@ class ViewController: NSViewController {
 
     
     
-// Обработка Input Default -------------------------------------------------------------------------------------
+// Default Stereo Channels Input  -------------------------------------------------------------------------------------
     
     
     @IBOutlet weak var DefaultChannelsInput: NSComboBox!
