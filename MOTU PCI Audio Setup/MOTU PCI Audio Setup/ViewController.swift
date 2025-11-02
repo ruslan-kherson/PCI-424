@@ -505,6 +505,7 @@ class ViewController: NSViewController {
                 let preferredOutputValue = preferredOutputValues[selectedIndex]
         
         saveOutputToPlist(preferredOutputValue: preferredOutputValue)
+        
             
         }
 
@@ -627,7 +628,7 @@ class ViewController: NSViewController {
             
             var propertyAddress = AudioObjectPropertyAddress(
                 mSelector: 0x64636832, // 'dch2'  kAudioDevicePropertyPreferredChannelsForStereo,
-                mScope: kAudioDevicePropertyScopeOutput,
+                mScope: kAudioDevicePropertyScopeInput,
                 mElement: 0 //kAudioObjectPropertyElementWildcard
             )
             
